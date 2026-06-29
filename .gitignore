@@ -1,0 +1,15 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Environment / secrets
+.env
+
+# AWS credentials (never commit)
+.aws/
+aws/
+*.csv
+
+# Python caches
+__pycache__/
+*.pyc
