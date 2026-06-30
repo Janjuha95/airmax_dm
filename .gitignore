@@ -1,15 +1,19 @@
-# Python virtual environment
+# virtual environment
 .venv/
 venv/
 
-# Environment / secrets
+# secrets / credentials (never commit)
 .env
-
-# AWS credentials (never commit)
+.env/
 .aws/
 aws/
 *.csv
 
-# Python caches
+# generated artifacts (regenerate with `python main.py ...`)
+*.jsonl
+*.html
+belgium_provinces.geojson
+
+# python caches
 __pycache__/
 *.pyc

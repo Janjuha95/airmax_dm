@@ -1,6 +1,8 @@
-boto3
-psycopg2-binary
-python-dotenv
-folium
-branca
-shapely
+boto3==1.43.36
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+folium==0.20.0
+branca==0.8.2
+shapely==2.1.2
+open-irceline==3.0.2
+aiohttp==3.14.1
