@@ -1,11 +1,13 @@
 """Thin CLI for the airquality pipeline.
 
 Usage:
-    python main.py ingest      # drain the SQS queue into Postgres (JSONL backup + upsert)
-    python main.py aggregate   # (re)create the schema/view and print a validation summary
-    python main.py maps        # build the three Folium maps
-    python main.py who         # WHO-guideline exceedance summary + CSV
-    python main.py ircel       # cross-check vs IRCEL-CELINE (live network)
+    python main.py ingest            # drain the SQS queue into Postgres (JSONL backup + upsert)
+    python main.py aggregate         # (re)create the schema/view and print a validation summary
+    python main.py backfill-latency  # set sent_timestamp on existing rows from the JSONL backup
+    python main.py maps              # build the Folium pollutant maps
+    python main.py who               # WHO-guideline exceedance summary + CSV
+    python main.py coverage          # per-city coverage/blind-spots + belgium_coverage.html
+    python main.py ircel             # cross-check vs IRCEL-CELINE (live network)
 """
 
 import argparse
@@ -15,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from airquality import aggregate, ingest, ircel, maps, who  # noqa: E402
+from airquality import aggregate, coverage, ingest, ircel, maps, who  # noqa: E402
 
 
 def main() -> None:
@@ -23,8 +25,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("ingest", help="drain the SQS queue into Postgres")
     sub.add_parser("aggregate", help="create schema/view and print a validation summary")
-    sub.add_parser("maps", help="build the three Folium maps")
+    sub.add_parser("backfill-latency", help="set sent_timestamp on existing rows from the JSONL backup")
+    sub.add_parser("maps", help="build the Folium pollutant maps")
     sub.add_parser("who", help="WHO guideline exceedance summary + CSV")
+    sub.add_parser("coverage", help="per-city coverage/blind-spots + belgium_coverage.html")
     sub.add_parser("ircel", help="cross-check against IRCEL-CELINE (live)")
     args = parser.parse_args()
 
@@ -41,8 +45,10 @@ def main() -> None:
     {
         "ingest": ingest.drain,
         "aggregate": aggregate.report,
+        "backfill-latency": ingest.backfill_latency,
         "maps": maps.build_all,
         "who": who.summarise,
+        "coverage": coverage.run,
         "ircel": ircel.cross_check,
     }[args.command]()
 

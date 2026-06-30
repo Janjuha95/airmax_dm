@@ -25,7 +25,7 @@ from shapely.prepared import prep
 from . import config
 from .aggregate import in_window_measurements, major_city_aggregates, view_rows
 from .db import connection
-from .who import who_status
+from .who import eu_2030_context, who_band, who_status
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +108,15 @@ def title_box(title: str, ws, we) -> folium.Element:
     )
 
 
+def data_as_of_banner(anchor) -> folium.Element:
+    """Fixed banner reminding viewers the maps are a snapshot of the 3h window, not live."""
+    ts = anchor.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return folium.Element(
+        "<div style='position:fixed;bottom:14px;left:14px;z-index:9999;background:#222;color:#fff;"
+        "padding:5px 10px;border-radius:4px;font-family:sans-serif;font-size:11px;opacity:.85'>"
+        f"Data as of {ts} UTC &mdash; snapshot, not live</div>")
+
+
 def popup_table(name: str, pollutants: dict) -> folium.Popup:
     body = "".join(
         f"<tr><td>{p}</td>"
@@ -132,6 +141,10 @@ def city_label(name: str, avg: float) -> str:
     return _halo(f"{name} {avg:.0f}" if abs(avg) >= 100 else f"{name} {avg:.1f}")
 
 
+TIER_COLOR = {"high": "#1a9850", "medium": "#d9a300", "low": "#d7191c"}
+BAND_COLOR = {"good": "#1a9850", "moderate": "#d9a300", "poor": "#d7191c"}
+
+
 def city_popup_who(name: str, pollutants: dict) -> folium.Popup:
     body = ""
     for p in sorted(pollutants):
@@ -140,18 +153,23 @@ def city_popup_who(name: str, pollutants: dict) -> folium.Popup:
         who = f"{g} {d['unit']}" if g is not None else "-"
         flag = f"{st} {ratio:.2f}×" if g is not None else "-"
         col = "#b00" if st == "ABOVE" else "#333"
+        tier = d.get("tier", "low")
         body += (f"<tr><td>{p}</td>"
                  f"<td style='text-align:right;padding-left:8px'>{d['avg']:.2f} {d['unit']}</td>"
                  f"<td style='text-align:right;padding-left:8px'>{d['count']}</td>"
+                 f"<td style='text-align:right;padding-left:8px'>{d.get('sensors', '-')}</td>"
+                 f"<td style='text-align:right;padding-left:8px;color:{TIER_COLOR.get(tier, '#333')}'>{tier}</td>"
                  f"<td style='text-align:right;padding-left:8px'>{who}</td>"
                  f"<td style='text-align:right;padding-left:8px;color:{col};font-weight:600'>{flag}</td></tr>")
     return folium.Popup(
         f"<div style='font-family:sans-serif'><b>{name}</b>"
         "<table style='border-collapse:collapse;font-size:12px;margin-top:4px'>"
-        "<tr><th style='text-align:left'>poll.</th><th>3h avg</th><th>n</th><th>WHO</th><th>flag</th></tr>"
+        "<tr><th style='text-align:left'>poll.</th><th>3h avg</th><th>n</th><th>sens</th>"
+        "<th>conf</th><th>WHO</th><th>flag</th></tr>"
         f"{body}</table>"
-        "<div style='font-size:10px;color:#777;margin-top:3px'>WHO 2021 short-term guideline "
-        "(indicative: 3h avg vs 8–24h guideline). Simulated data.</div></div>", max_width=380)
+        "<div style='font-size:10px;color:#777;margin-top:3px'>n = measurements, sens = distinct sensors, "
+        "conf = confidence. WHO 2021 short-term guideline (indicative). Simulated data.</div></div>",
+        max_width=440)
 
 
 def add_grouped_control(m, layers, title="Pollutant") -> None:
@@ -209,11 +227,16 @@ def build_major_cities() -> None:
             if not pdat:
                 continue
             above = who_status(p, pdat["avg"])[2] == "ABOVE"
-            tip = f"{name}: {pdat['avg']:.1f} {pdat['unit']}" + (" ⚠ above WHO" if above else "")
+            tier = pdat.get("tier", "low")
+            # Flag low-confidence readings: dashed stroke (not high) and hollow fill (low).
+            dash = None if tier == "high" else "5,4"
+            fill_op = 0.25 if tier == "low" else 0.9
+            tip = (f"{name}: {pdat['avg']:.1f} {pdat['unit']} ({tier} conf)"
+                   + (" ⚠ above WHO" if above else ""))
             folium.CircleMarker(
                 [data[name]["lat"], data[name]["lon"]], radius=12,
-                weight=(3 if above else 1), color=("#d7191c" if above else "#333"),
-                fill=True, fill_color=color_from(index, pdat["avg"]), fill_opacity=0.9,
+                weight=(3 if above else 1), color=("#d7191c" if above else "#333"), dash_array=dash,
+                fill=True, fill_color=color_from(index, pdat["avg"]), fill_opacity=fill_op,
                 tooltip=tip, popup=city_popup_who(name, data[name]["pollutants"]),
             ).add_to(fg)
             folium.Marker([data[name]["lat"], data[name]["lon"]],
@@ -232,7 +255,10 @@ def build_major_cities() -> None:
         "border:1px solid #ccc;border-radius:4px;font-family:sans-serif;font-size:11px;"
         "box-shadow:0 1px 4px rgba(0,0,0,.3)'>"
         "<span style='display:inline-block;width:9px;height:9px;border:3px solid #d7191c;"
-        "border-radius:50%;vertical-align:middle'></span> exceeds WHO 2021 guideline (indicative)</div>"))
+        "border-radius:50%;vertical-align:middle'></span> exceeds WHO 2021 guideline (indicative)"
+        "<br><span style='display:inline-block;width:9px;height:9px;border:1px dashed #333;"
+        "border-radius:50%;vertical-align:middle'></span> dashed / hollow = low confidence</div>"))
+    m.get_root().html.add_child(data_as_of_banner(anchor))
     m.save(str(config.MAJOR_CITIES_HTML))
     log.info("Saved %s (%d cities, %d missing pairs)", config.MAJOR_CITIES_HTML,
              len(config.TARGET_CITIES), len(missing))
@@ -269,6 +295,7 @@ def build_coverage() -> None:
 
     add_grouped_control(m, layers)
     m.get_root().html.add_child(title_box("Current air quality &mdash; 3h average (sensor coverage)", ws, we))
+    m.get_root().html.add_child(data_as_of_banner(we))
     m.save(str(config.COVERAGE_HTML))
     log.info("Saved %s (%d cities)", config.COVERAGE_HTML, len(cities))
 
@@ -377,9 +404,93 @@ def build_provinces() -> dict:
 
     add_grouped_control(m, layers)
     m.get_root().html.add_child(title_box("Current air quality by province &mdash; 3h average", start, anchor))
+    m.get_root().html.add_child(data_as_of_banner(anchor))
     m.save(str(config.PROVINCES_HTML))
     log.info("Saved %s (%d areas, %d unassigned rows)", config.PROVINCES_HTML, len(provinces), unassigned)
     return spreads
+
+
+# ------------------------------------------------------------------ map 4: city coverage
+def _fmt_td(td) -> str:
+    if td is None:
+        return "n/a"
+    s = int(td.total_seconds())
+    sign, s = ("-", -s) if s < 0 else ("", s)
+    h, rem = divmod(s, 3600)
+    mnt, sec = divmod(rem, 60)
+    return f"{sign}{h}h{mnt:02d}m" if h else f"{sign}{mnt}m{sec:02d}s"
+
+
+def _coverage_popup(c: dict) -> folium.Popup:
+    rows = ""
+    for p in config.POLLUTANT_ORDER:
+        r = c["readings"].get(p)
+        if not r:
+            continue
+        eu = r["eu2030"]
+        eu_txt = f"{eu['limit']} ({eu['ratio']:.1f}×)" if eu else "-"
+        rows += (f"<tr><td>{p}</td>"
+                 f"<td style='text-align:right;padding-left:8px'>{r['avg']:.2f} {r['unit']}</td>"
+                 f"<td style='text-align:right;padding-left:8px'>{r['count']}</td>"
+                 f"<td style='text-align:right;padding-left:8px'>{r['sensors']}</td>"
+                 f"<td style='text-align:right;padding-left:8px;color:{TIER_COLOR.get(r['tier'], '#333')}'>{r['tier']}</td>"
+                 f"<td style='text-align:right;padding-left:8px'>{r['who_band'] or '-'}</td>"
+                 f"<td style='text-align:right;padding-left:8px'>{eu_txt}</td></tr>")
+    if not rows:
+        rows = "<tr><td colspan='7' style='color:#b00'>no in-window data (blind spot)</td></tr>"
+    band = c["city_band"]
+    head = (f"<b>{c['city']}</b> &mdash; coverage "
+            f"<b style='color:{config.COVERAGE_COLORS[c['klass']]}'>{c['klass']}</b>"
+            f" &middot; air quality <b style='color:{BAND_COLOR.get(band, '#555')}'>{band or 'n/a'}</b>"
+            f"<div style='font-size:11px;color:#555'>{c['total']} measurements, {c['sensors']} sensors, "
+            f"{len(c['present'])}/{len(config.POLLUTANT_ORDER)} pollutants"
+            + (f"; missing {', '.join(c['missing'])}" if c['missing'] else "")
+            + f"<br>staleness {_fmt_td(c['staleness'])}, median latency {_fmt_td(c['median_latency'])} "
+            f"(p90 {_fmt_td(c['p90_latency'])})</div>")
+    return folium.Popup(
+        f"<div style='font-family:sans-serif'>{head}"
+        "<table style='border-collapse:collapse;font-size:12px;margin-top:5px'>"
+        "<tr><th style='text-align:left'>poll.</th><th>3h avg</th><th>n</th><th>sens</th><th>conf</th>"
+        "<th>WHO</th><th>EU 2030</th></tr>"
+        f"{rows}</table>"
+        "<div style='font-size:10px;color:#777;margin-top:3px'>WHO = indicative 3h band. "
+        "EU 2030 = annual limit µg/m³ (context only, not annual compliance). "
+        "Latency = simulator publish-lag. Simulated data.</div></div>", max_width=470)
+
+
+def _coverage_legend() -> folium.Element:
+    items = "".join(
+        f"<div><span style='display:inline-block;width:11px;height:11px;background:{col};"
+        "border:1px solid #333;border-radius:50%;vertical-align:middle'></span> "
+        f"{label}</div>"
+        for label, col in (("covered & high-confidence", config.COVERAGE_COLORS["green"]),
+                           ("sparse / low-confidence", config.COVERAGE_COLORS["amber"]),
+                           ("blind spot (no data)", config.COVERAGE_COLORS["red"])))
+    return folium.Element(
+        "<div style='position:fixed;top:92px;left:60px;z-index:9999;background:white;padding:6px 10px;"
+        "border:1px solid #ccc;border-radius:4px;font-family:sans-serif;font-size:11px;"
+        f"box-shadow:0 1px 4px rgba(0,0,0,.3)'>{items}</div>")
+
+
+def build_city_coverage(coverage: dict) -> None:
+    """Render belgium_coverage.html: one green/amber/red marker per target city."""
+    start, anchor = coverage["start"], coverage["anchor"]
+    m = _base_map()
+    for c in coverage["cities"]:
+        folium.CircleMarker(
+            [c["lat"], c["lon"]], radius=12, weight=2, color="#333",
+            fill=True, fill_color=config.COVERAGE_COLORS[c["klass"]], fill_opacity=0.9,
+            tooltip=f"{c['city']}: {c['klass']} ({c['total']} meas, {c['sensors']} sensors)",
+            popup=_coverage_popup(c)).add_to(m)
+        folium.Marker([c["lat"], c["lon"]],
+                      icon=folium.DivIcon(icon_size=(0, 0), icon_anchor=(-10, 6),
+                                          html=_halo(c["city"]))).add_to(m)
+    m.get_root().html.add_child(
+        title_box("Belgian city coverage &amp; confidence &mdash; 3h snapshot", start, anchor))
+    m.get_root().html.add_child(_coverage_legend())
+    m.get_root().html.add_child(data_as_of_banner(anchor))
+    m.save(str(config.CITY_COVERAGE_HTML))
+    log.info("Saved %s (%d cities)", config.CITY_COVERAGE_HTML, len(coverage["cities"]))
 
 
 def build_all() -> None:

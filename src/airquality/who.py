@@ -24,6 +24,31 @@ def who_status(parameter: str, avg: float):
     return g, avg / g, ("ABOVE" if avg > g else "within")
 
 
+def who_band(parameter: str, value: float) -> str | None:
+    """Indicative 3h snapshot band — 'good' / 'moderate' / 'poor' — vs the WHO short-term guideline.
+
+    Not formal compliance (a 3h average is not the guideline's 8–24h averaging period).
+    """
+    g = config.WHO_GUIDELINES.get(parameter)
+    if g is None:
+        return None
+    ratio = value / g
+    if ratio <= config.WHO_BAND_CUTS["good"]:
+        return "good"
+    if ratio <= config.WHO_BAND_CUTS["moderate"]:
+        return "moderate"
+    return "poor"
+
+
+def eu_2030_context(parameter: str, value: float) -> dict | None:
+    """Indicative EU-2030 annual-limit context: {limit, ratio}. CONTEXT only, not compliance
+    (our 3h average is not comparable to an annual mean limit)."""
+    limit = config.EU_LIMITS["2030"].get(parameter)
+    if limit is None:
+        return None
+    return {"limit": limit, "ratio": value / limit}
+
+
 def exceedance_rows(data: dict) -> list[dict]:
     """Per city: which pollutants exceed WHO, ranked by count then PM2.5 ratio."""
     rows = []

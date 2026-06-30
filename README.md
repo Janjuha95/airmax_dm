@@ -51,12 +51,14 @@ main.py                     # CLI: ingest | aggregate | maps | who | ircel
 sql/
   schema.sql                # measurements table + current_air_quality_3h view
 src/airquality/
-  config.py                 # region, queue, WINDOW_HOURS, TARGET_CITIES, WHO_GUIDELINES, IRCEL…
+  config.py                 # region, queue, window, cities, WHO_GUIDELINES, WHO_BAND_CUTS,
+                            # EU_LIMITS, CONFIDENCE_TIERS, COVERAGE_*, IRCEL…  (all thresholds)
   db.py                     # context-managed Postgres connection from DATABASE_URL
-  ingest.py                 # SQS drain (JSONL safety net + idempotent upsert)
-  aggregate.py              # schema/view creation + query helpers (the 3h window)
-  maps.py                   # the three Folium maps
-  who.py                    # WHO exceedance summary
+  ingest.py                 # SQS drain (JSONL safety net + upsert) + backfill_latency
+  aggregate.py              # schema/view creation + query helpers (the 3h window, confidence)
+  maps.py                   # Folium maps: pollutant maps + the city-coverage map
+  who.py                    # WHO exceedance summary + good/moderate/poor bands + EU-2030 context
+  coverage.py               # per-city coverage / blind-spots / latency
   ircel.py                  # IRCEL-CELINE cross-check
 ```
 
@@ -75,12 +77,17 @@ copy .env.example .env        # then edit DATABASE_URL (Postgres must be running
 # AWS creds: ~/.aws, a project-local .aws/ folder, or AWS_* in .env
 
 # 3. pipeline
-.venv\Scripts\python.exe main.py aggregate   # create table + view
-.venv\Scripts\python.exe main.py ingest      # drain SQS -> Postgres (few minutes for ~56k)
-.venv\Scripts\python.exe main.py maps        # build the 3 HTML maps
-.venv\Scripts\python.exe main.py who         # WHO exceedance summary + CSV
-.venv\Scripts\python.exe main.py ircel       # cross-check vs IRCEL (needs internet)
+.venv\Scripts\python.exe main.py aggregate         # create table + view (adds sent_timestamp col)
+.venv\Scripts\python.exe main.py ingest            # drain SQS -> Postgres (few minutes for ~56k)
+.venv\Scripts\python.exe main.py backfill-latency  # set sent_timestamp on existing rows from the JSONL
+.venv\Scripts\python.exe main.py maps              # build the pollutant maps
+.venv\Scripts\python.exe main.py who               # WHO exceedance summary + CSV
+.venv\Scripts\python.exe main.py coverage          # per-city coverage/blind-spots + belgium_coverage.html
+.venv\Scripts\python.exe main.py ircel             # cross-check vs IRCEL (needs internet)
 ```
+
+`ingest` populates `sent_timestamp` on insert going forward; `backfill-latency` fills it on rows
+that predate the column, straight from the JSONL backup (no re-ingest). Both are idempotent.
 
 Open the `*.html` files in any browser. (Map data is embedded; basemap tiles, Leaflet, d3 and
 the grouped-layer plugin load from CDNs, so the live render needs internet.)
@@ -103,6 +110,24 @@ the grouped-layer plugin load from CDNs, so the live render needs internet.)
 - **OpenAQ vs IRCEL divergence confirms the above.** Against IRCEL-CELINE's live RIO grid, our
   simulated values run far high: NO₂ ~95–117 vs real ~11–21 µg/m³; SO₂ ~150–180 vs single digits
   in reality. Only O₃ is the same order of magnitude. (Caveats below.)
+
+### Trust / feasibility insights (every reading is graded)
+
+- **Confidence-graded readings.** Each (city, pollutant) carries its measurement count, distinct
+  sensor count, and a tier (`high` n≥10 & ≥3 sensors / `medium` n≥3 / `low`). The 11 larger cities
+  are high-confidence; 4 small ones (Ostend, Bruges, Antwerp, Genk) are sparse — flagged amber on
+  the coverage map and dashed/hollow on the pollutant maps.
+- **Coverage / blind spots.** In the current snapshot all 15 target cities report all 6 pollutants,
+  so there are **no blind spots** — coverage is 11 green / 4 amber / 0 red. `coverage_summary.csv`
+  records present-vs-expected pollutants, totals, sensors, staleness and latency per city.
+- **WHO bands + EU regulatory context.** Each reading gets an indicative `good/moderate/poor` band
+  vs the WHO short-term guideline, and PM2.5/NO₂/PM10 carry **EU annual-limit context** — current
+  (25/40/40) and **2030** (10/20/20) from revised Directive (EU) 2024/2881. Shown as context only:
+  a 3-hour average is not comparable to an annual mean limit.
+- **Per-city latency (simulator publish-lag).** `sent_timestamp − date_utc` is **negative** (median
+  ≈ −24 to −33 min): the simulator stamps measurement times ~28 min *ahead* of when it publishes to
+  SQS. That is a simulator artifact — a real feed's latency would be positive and must be measured
+  against the genuine OpenAQ API/stream, not this stand-in.
 
 ## Cost
 
@@ -132,6 +157,13 @@ Deliberately omitted per the brief — the seams are marked with `# productioniz
   `ApproximateAgeOfOldestMessage`. Hook: after `aggregate.report`.
 - **Infrastructure as code** — Terraform/CDK for the RDS instance, queue, Lambda, schedule and
   alarms instead of console/CLI setup.
+- **Real OpenAQ feed** — replace the SQS simulator with the genuine OpenAQ API/stream; only then are
+  positive latency, time-aligned IRCEL validation, and real geographic variation meaningful. The
+  latency seam is marked `# productionization:` in `coverage.py`. Hook: `ingest`.
+- **Serving layer** — a live web server / auto-refresh dashboard instead of static HTML files
+  (out of scope here). Hook: serve `current_air_quality_3h` + `coverage_summary` from an API.
+- **Decision modelling** — health-impact or filtration-ROI modelling for the AirMax pitch
+  (deliberately not built; would layer on top of the per-city snapshot).
 
 ## Caveats on the IRCEL cross-check
 
@@ -140,3 +172,12 @@ This is a **method demonstration**, not a validation: (a) our OpenAQ values are 
 aligned. A rigorous cross-validation against the **real** OpenAQ feed would need time-aligned
 windows, nearest-station (not city-centroid) matching, matched averaging periods, and unit
 normalisation.
+
+## Sources
+
+- **EU air-quality limit values** — revised Ambient Air Quality Directive **(EU) 2024/2881**,
+  Annex I (2030 annual limits: PM2.5 10, NO₂ 20, PM10 20 µg/m³) and Directive 2008/50/EC (current
+  25/40/40). [EUR-Lex](https://eur-lex.europa.eu/eli/dir/2024/2881/oj) ·
+  [EC air quality standards](https://environment.ec.europa.eu/topics/air/air-quality/eu-air-quality-standards_en)
+- **WHO 2021 global air quality guidelines** — short-term guideline values used for the indicative
+  bands and exceedance flags.

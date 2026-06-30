@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS measurements (
     PRIMARY KEY (location_id, parameter, date_utc)
 );
 
+-- SQS publish time (epoch from the SentTimestamp attribute), for per-city latency analysis.
+-- Idempotent so re-running the schema on an existing table is safe.
+ALTER TABLE measurements ADD COLUMN IF NOT EXISTS sent_timestamp TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_measurements_date_utc       ON measurements (date_utc);
 CREATE INDEX IF NOT EXISTS idx_measurements_city_parameter ON measurements (city, parameter);
 

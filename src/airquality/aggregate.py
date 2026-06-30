@@ -52,6 +52,19 @@ def in_window_measurements(conn) -> tuple[list[tuple], datetime, datetime]:
         return cur.fetchall(), start, anchor
 
 
+def in_window_detailed(conn) -> tuple[list[tuple], datetime, datetime]:
+    """In-window rows with timing columns, for coverage + latency analysis.
+
+    Returns (rows of (parameter, value, latitude, longitude, location_id, date_utc,
+    sent_timestamp), window_start, anchor).
+    """
+    start, anchor = window(conn)
+    with conn.cursor() as cur:
+        cur.execute("""SELECT parameter, value, latitude, longitude, location_id, date_utc, sent_timestamp
+                       FROM measurements WHERE date_utc > %s AND date_utc <= %s""", (start, anchor))
+        return cur.fetchall(), start, anchor
+
+
 def major_city_aggregates(conn, cities=None) -> tuple[dict, list, tuple[datetime, datetime]]:
     """Average in-window measurements from sensors within ~15 km of each city centroid.
 
@@ -59,8 +72,9 @@ def major_city_aggregates(conn, cities=None) -> tuple[dict, list, tuple[datetime
     """
     cities = cities or config.TARGET_CITIES
     rows, start, anchor = in_window_measurements(conn)
-    acc = {name: defaultdict(lambda: {"sum": 0.0, "n": 0, "unit": None}) for name, _, _ in cities}
-    for param, unit, value, lat, lon, _loc in rows:
+    acc = {name: defaultdict(lambda: {"sum": 0.0, "n": 0, "unit": None, "locs": set()})
+           for name, _, _ in cities}
+    for param, unit, value, lat, lon, loc in rows:
         if lat is None or lon is None:
             continue
         for name, clat, clon in cities:
@@ -69,13 +83,18 @@ def major_city_aggregates(conn, cities=None) -> tuple[dict, list, tuple[datetime
                 a["sum"] += float(value)
                 a["n"] += 1
                 a["unit"] = unit
+                a["locs"].add(loc)
     data = {name: {"lat": lat, "lon": lon, "pollutants": {}} for name, lat, lon in cities}
     missing = []
     for name, _, _ in cities:
         for p in config.POLLUTANT_ORDER:
             a = acc[name].get(p)
             if a and a["n"] > 0:
-                data[name]["pollutants"][p] = {"avg": a["sum"] / a["n"], "unit": a["unit"], "count": a["n"]}
+                sensors = len(a["locs"])
+                data[name]["pollutants"][p] = {
+                    "avg": a["sum"] / a["n"], "unit": a["unit"], "count": a["n"],
+                    "sensors": sensors, "tier": config.confidence_tier(a["n"], sensors),
+                }
             else:
                 missing.append((name, p))
     return data, missing, (start, anchor)

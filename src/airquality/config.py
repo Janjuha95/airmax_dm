@@ -33,6 +33,36 @@ PALETTE = ["#ffffcc", "#a1dab4", "#41b6c4", "#2c7fb8", "#253494"]  # YlGnBu, col
 # --- WHO 2021 short-term guideline values (indicative vs our 3h avg, not formal compliance) ---
 WHO_GUIDELINES = {"pm25": 15, "pm10": 45, "no2": 25, "so2": 40, "o3": 100, "co": 4}
 
+# Indicative 3h "good / moderate / poor" band as a ratio to the WHO short-term guideline.
+WHO_BAND_CUTS = {"good": 0.5, "moderate": 1.0}  # <=0.5x good, <=1.0x moderate, else poor
+
+# --- EU Ambient Air Quality Directive ANNUAL limit values (µg/m³) — regulatory CONTEXT only ---
+# Shown indicatively only: a 3h average is NOT comparable to an annual mean limit (no compliance).
+# "current" = Directive 2008/50/EC; "2030" = revised Directive (EU) 2024/2881, Annex I Section 1
+# (limit values to be attained by 1 Jan 2030). Verified 2026-06 against EUR-Lex eli/dir/2024/2881:
+# PM2.5 25->10, NO2 40->20, PM10 40->20 µg/m³.
+EU_LIMITS = {
+    "current": {"pm25": 25, "no2": 40, "pm10": 40},
+    "2030": {"pm25": 10, "no2": 20, "pm10": 20},
+}
+
+# --- confidence tiers for a (city, pollutant) reading (tunable) ---
+# Reflects how many measurements (n) and distinct sensors backed the 3h average.
+CONFIDENCE_TIERS = {
+    "high": {"min_n": 10, "min_sensors": 3},
+    "medium": {"min_n": 3, "min_sensors": 1},
+}  # anything below "medium" is "low" (sparse / single sensor)
+
+
+def confidence_tier(n: int, sensors: int) -> str:
+    """Classify a reading's trust level from its measurement and distinct-sensor counts."""
+    hi, med = CONFIDENCE_TIERS["high"], CONFIDENCE_TIERS["medium"]
+    if n >= hi["min_n"] and sensors >= hi["min_sensors"]:
+        return "high"
+    if n >= med["min_n"] and sensors >= med["min_sensors"]:
+        return "medium"
+    return "low"
+
 # --- 15 major cities (name, lat, lon) ---
 TARGET_CITIES: list[tuple[str, float, float]] = [
     ("Brussels", 50.85, 4.35), ("Antwerp", 51.22, 4.40), ("Ghent", 51.05, 3.72),
@@ -66,6 +96,14 @@ IRCEL_CITIES = [c for c in TARGET_CITIES
 IRCEL_RIO_FEATURES = {"pm25": "PM25_HMEAN", "pm10": "PM10_HMEAN", "no2": "NO2_HMEAN",
                       "o3": "O3_HMEAN", "so2": "SO2_HMEAN"}
 IRCEL_LOOKBACK_HOURS = 8  # RIO grids publish with a lag; step back to find the latest
+
+# --- per-city coverage / blind-spot classification + outputs ---
+# A city is "green" if it has every expected pollutant and at least this fraction of its readings
+# are high-confidence; "amber" if it has any in-window data; "red" if it is a blind spot (no data).
+COVERAGE_GREEN_MIN_HIGH_FRACTION = 0.6
+COVERAGE_COLORS = {"green": "#1a9850", "amber": "#fdae61", "red": "#d73027"}
+COVERAGE_SUMMARY_CSV = BASE_DIR / "coverage_summary.csv"
+CITY_COVERAGE_HTML = BASE_DIR / "belgium_coverage.html"
 
 
 def resolve_aws_credentials() -> str:
